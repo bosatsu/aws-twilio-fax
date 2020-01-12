@@ -1,0 +1,36 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+
+Description: SAM app that uses Rekognition APIs to detect text in S3 Objects and stores labels in DynamoDB.
+
+Resources:
+  SendFax:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Handler: app/send_fax.lambda_handler
+      Runtime: python3.7
+      CodeUri: .
+      Description: Gets object, prints name.
+      MemorySize: 256
+      Timeout: 30
+      Environment:
+        Variables:
+          PHONE_NUMBER: "555-555-5555"
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - 's3:GetObject'
+              Resource: 'arn:aws:s3:::*'
+      Events:
+        BucketEvent1:
+          Type: S3
+          Properties:
+            Bucket: 
+              Ref: SendFaxBucket
+            Events:
+              - 's3:ObjectCreated:*'
+  
+  SendFaxBucket:
+    Type: 'AWS::S3::Bucket'
