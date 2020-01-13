@@ -13,9 +13,6 @@ Resources:
       Description: Gets object, prints name.
       MemorySize: 256
       Timeout: 30
-      Environment:
-        Variables:
-          PHONE_NUMBER: "555-555-5555"
       Policies:
         - Version: '2012-10-17'
           Statement:
@@ -23,6 +20,14 @@ Resources:
               Action:
                 - 's3:GetObject'
               Resource: 'arn:aws:s3:::*'
+            - Effect: Allow
+              Action:
+              - ssm:GetParametersByPath
+              Resource:
+              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/account_sid
+              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/auth_token
+              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/to_number
+              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/from_number
       Events:
         BucketEvent1:
           Type: S3
