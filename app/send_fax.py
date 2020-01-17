@@ -1,36 +1,34 @@
-# TODO: Write code to generate presigned URL for S3 PDF object
-# TODO: Look up how to log to cloudwatch from Python
-# TODO: Test parameter store lookup
-
-
-from __future__ import print_function
 import boto3
 import json
 import urllib
 import time
+import logging
 
 from twilio.rest import Client
+
+# Initialize logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 # Initialize AWS clients
 s3_client = boto3.client('s3')
 ssm_client = boto3.client('ssm')
 
-
 # Fetch all parameters
-account_sid = ssm_client.get_paramter(Name='account_sid')
-auth_token = ssm_client.get_paramter(Name='auth_token')
-to_number = ssm_client.get_paramter(Name='to_number')
-from_number = ssm_client.get_paramter(Name='from_number')
+account_sid = ssm_client.get_parameter(Name='/prod/send_fax/account_sid', WithDecryption=True)
+auth_token = ssm_client.get_parameter(Name='/prod/send_fax/auth_token', WithDecryption=True)
+to_number = ssm_client.get_parameter(Name='/prod/send_fax/to_number', WithDecryption=True)
+from_number = ssm_client.get_parameter(Name='/prod/send_fax/from_number', WithDecryption=True)
 
 
-def send_fax(self, url):
+def send_fax(url):
     '''
     Function for sending a fax
     '''
-    client = Client(account_sid, auth_token)
+    client = Client(account_sid['Parameter']['Value'], auth_token['Parameter']['Value'])
     fax = client.fax.faxes.create(
-        from_=from_number,
-        to=to_number,
+        from_=from_number['Parameter']['Value'],
+        to=to_number['Parameter']['Value'],
         quality="standard",
         media_url=url
     )
@@ -46,7 +44,7 @@ def send_fax(self, url):
         else:
             time.sleep(5)
     if status == "delivered":
-        print(
+        logger.info(
             "SUCCESS: Sending fax completed successfully."
             "fax_id = {fax.sid}"
             "fax_from = {fax.from_}"
@@ -60,13 +58,13 @@ def send_fax(self, url):
         )
         return True
     elif status == "started":
-        print("FAILED: Sending fax timed out while waiting for Twilio service to initialize.")
+        logger.error("FAILED: Sending fax timed out while waiting for Twilio service to initialize.")
         return False
     elif status in ["queued", "processing", "sending"]:
-        print("FAILED: Sending fax timed out with status code: {}.")
+        logger.error(f"FAILED: Sending fax timed out with status code: {status}.")
         return False
     else:
-        print("FAILED: Sending fax failed with status code: {}".format(self.status))
+        logger.error(f"FAILED: Sending fax failed with status code: {status}")
         return False
 
 
@@ -79,15 +77,26 @@ def lambda_handler(event, context):
     # print("Received event: " + json.dumps(event, indent=2))
 
     # Get the object from the event.
-    bucket = event['Records'][0]['s3']['bucket']['name']
-    key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'])
+    bucket_name = event['Records'][0]['s3']['bucket']['name']
+    object_key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'])
 
     try:
-        print(bucket, key)
-        print("{account_sid}")
-        print("{auth_token}")
-        print("{to_number}")
-        print("{from_number}")
-    except Exception as e:
-        print("Error processing object {} from bucket {}. Event {}".format(key, bucket, json.dumps(event, indent=2)))
-        raise e
+        logger.info(f"{bucket_name}, {object_key}")
+        media_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={
+                'Bucket': bucket_name,
+                'Key': object_key
+            },
+            ExpiresIn=3600
+        )
+
+        # send_fax(media_url)
+        logger.info(f"Created media url {media_url}")
+        return None
+
+    except Exception as err:
+        logger.error(
+            f"Error processing object {object_key} from bucket {bucket_name}. Event {json.dumps(event, indent=2)}"
+        )
+        raise err

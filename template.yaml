@@ -1,10 +1,10 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: 'AWS::Serverless-2016-10-31'
 
-Description: SAM app that uses Rekognition APIs to detect text in S3 Objects and stores labels in DynamoDB.
+Description: SAM app that sends a fax when an object is uploaded to S3.
 
 Resources:
-  SendFax:
+  SendFaxLambda:
     Type: 'AWS::Serverless::Function'
     Properties:
       Handler: app/send_fax.lambda_handler
@@ -22,12 +22,12 @@ Resources:
               Resource: 'arn:aws:s3:::*'
             - Effect: Allow
               Action:
-              - ssm:GetParametersByPath
+              - ssm:GetParameter
               Resource:
-              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/account_sid
-              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/auth_token
-              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/to_number
-              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/from_number
+              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/prod/send_fax/account_sid
+              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/prod/send_fax/auth_token
+              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/prod/send_fax/to_number
+              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/prod/send_fax/from_number
       Events:
         BucketEvent1:
           Type: S3
