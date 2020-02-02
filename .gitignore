@@ -1,8 +1,10 @@
 
 # Created by https://www.gitignore.io/api/osx,linux,python,windows,pycharm,visualstudiocode
 
-# Sam toml file
+# repo related
+secrets.yaml
 samconfig.toml
+events
 
 ### Linux ###
 *~

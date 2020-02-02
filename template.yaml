@@ -1,41 +1,203 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: 'AWS::Serverless-2016-10-31'
 
-Description: SAM app that sends a fax when an object is uploaded to S3.
+Description: SAM app to send and receive faxes.
+
+Globals:
+  Function:
+    Timeout: 300
+    Runtime: python3.7
+    CodeUri: app
+    MemorySize: 128
 
 Resources:
-  SendFaxLambda:
-    Type: 'AWS::Serverless::Function'
+  EmailToFaxBucket:
+    Type: AWS::S3::Bucket
     Properties:
-      Handler: app/send_fax.lambda_handler
-      Runtime: python3.7
-      CodeUri: .
-      Description: Gets object, prints name.
-      MemorySize: 256
-      Timeout: 30
+      BucketName: !Sub "email-to-fax-bucket-${AWS::StackName}"
+      LifecycleConfiguration:
+        Rules:
+          - ExpirationInDays: 1
+            Status: Enabled
+            Id: CurrentObjectExpires
+          - NoncurrentVersionExpirationInDays: 1
+            Status: Enabled
+            Id: NoncurrentObjectExpires
+
+  SendFaxBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "send-fax-bucket-${AWS::StackName}"
+      LifecycleConfiguration:
+        Rules:
+          - ExpirationInDays: 1
+            Status: Enabled
+            Id: CurrentObjectExpires
+          - NoncurrentVersionExpirationInDays: 1
+            Status: Enabled
+            Id: NoncurrentObjectExpires
+
+  RecieveFaxBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "receive-fax-bucket-${AWS::StackName}"
+      LifecycleConfiguration:
+        Rules:
+          - ExpirationInDays: 14
+            Status: Enabled
+            Id: CurrentObjectExpires
+          - NoncurrentVersionExpirationInDays: 14
+            Status: Enabled
+            Id: NoncurrentObjectExpires
+
+  EmailtoFaxFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Receives an email and saves PDF attachment into SendFaxBucket
+      Handler: email_to_fax.lambda_handler
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref 'SendFaxBucket' 
       Policies:
         - Version: '2012-10-17'
           Statement:
             - Effect: Allow
               Action:
-                - 's3:GetObject'
-              Resource: 'arn:aws:s3:::*'
+                - s3:PutObject
+              Resource: !Sub "arn:aws:s3:::send-fax-bucket-${AWS::StackName}/*"
             - Effect: Allow
               Action:
-              - ssm:GetParameter
+                - s3:GetObject
+                - s3:DeleteObject
+              Resource: !Sub "arn:aws:s3:::email-to-fax-bucket-${AWS::StackName}/*"
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
               Resource:
-              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/prod/send_fax/account_sid
-              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/prod/send_fax/auth_token
-              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/prod/send_fax/to_number
-              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/prod/send_fax/from_number
+              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/prod/approved_fax_senders
+              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/prod/admin_email
+              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/prod/validated_ses_email
       Events:
-        BucketEvent1:
+        EmailUpload:
+          Type: S3
+          Properties:
+            Bucket: 
+              Ref: EmailToFaxBucket
+            Events:
+              - s3:ObjectCreated:*
+
+  SendFaxFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: send_fax.lambda_handler
+      Description: Generates pre-signed url for S3 object and sends to Twilio
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: !Sub "arn:aws:s3:::send-fax-bucket-${AWS::StackName}/*"
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+              Resource:
+              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/prod/twilio
+      Events:
+        PDFUpload:
           Type: S3
           Properties:
             Bucket: 
               Ref: SendFaxBucket
             Events:
-              - 's3:ObjectCreated:*'
-  
-  SendFaxBucket:
-    Type: 'AWS::S3::Bucket'
+              - s3:ObjectCreated:*
+
+  ReceiveFaxFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: receive_fax.lambda_handler
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref 'RecieveFaxBucket' 
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub "arn:aws:s3:::${RecieveFaxBucket}/*"
+      Events:
+        FaxCheck:
+          Type: Api
+          Properties:
+            Path: /fax/check
+            Method: post
+        FaxReceive:
+          Type: Api
+          Properties:
+            Path: /fax/receive
+            Method: post
+
+  FaxToEmailFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: fax_to_email.lambda_handler
+      Description: Sends an email when a pdf is put into ReceiveBucket
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: !Sub "arn:aws:s3:::receive-fax-bucket-${AWS::StackName}/*"
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+              Resource:
+              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/prod/fax_to_email
+      Events:
+        PDFUpload:
+          Type: S3
+          Properties:
+            Bucket: 
+              Ref: RecieveFaxBucket
+            Events:
+              - s3:ObjectCreated:*
+
+  EmailToFaxSESRuleSet:
+    Type: AWS::SES::ReceiptRuleSet
+    Properties:
+      RuleSetName: default-rule-set
+  EmailToFaxSESRule1:
+    Type: AWS::SES::ReceiptRule
+    Properties:
+      RuleSetName: !Ref EmailToFaxSESRuleSet
+      Rule:
+        Enabled: true
+        ScanEnabled: true
+        Recipients:
+          - fax@faxtojapan.xyz
+        Actions:
+          - S3Action:
+               BucketName: !Ref EmailToFaxBucket
+
+  EmailToFaxBucketPolicy:              
+    Type: AWS::S3::BucketPolicy
+    Properties: 
+      Bucket: !Ref EmailToFaxBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ses.amazonaws.com
+            Action: 's3:PutObject'
+            Resource: !Sub "arn:aws:s3:::email-to-fax-bucket-${AWS::StackName}/*"
+
+
+Outputs:
+  ReceiveFaxApi:
+    Description: "API Gateway endpoint URL for Prod stage for ReceiveFax function"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${ServerlessRestApiProdStage}/"
+  EmailToFaxBucketName:
+    Value: !Ref 'EmailToFaxBucket'
+    Description: Name of the EmailToFaxBucket Bucket.

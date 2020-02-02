@@ -1,9 +1,9 @@
-import boto3
 import json
+import logging
 import urllib
 import time
-import logging
 
+import boto3
 from twilio.rest import Client
 
 # Initialize logging
@@ -14,23 +14,21 @@ logger.setLevel(logging.INFO)
 s3_client = boto3.client('s3')
 ssm_client = boto3.client('ssm')
 
-# Fetch all parameters
-account_sid = ssm_client.get_parameter(Name='/prod/send_fax/account_sid', WithDecryption=True)
-auth_token = ssm_client.get_parameter(Name='/prod/send_fax/auth_token', WithDecryption=True)
-to_number = ssm_client.get_parameter(Name='/prod/send_fax/to_number', WithDecryption=True)
-from_number = ssm_client.get_parameter(Name='/prod/send_fax/from_number', WithDecryption=True)
+# Fetch ssm parameters
+ssm_response = ssm_client.get_parameter(Name='/prod/twilio', WithDecryption=True)
+ssm_params = json.loads(ssm_response['Parameter']['Value'])
 
 
-def send_fax(url):
+def send_fax(from_phone, to_phone, media_url):
     '''
     Function for sending a fax
     '''
-    client = Client(account_sid['Parameter']['Value'], auth_token['Parameter']['Value'])
-    fax = client.fax.faxes.create(
-        from_=from_number['Parameter']['Value'],
-        to=to_number['Parameter']['Value'],
+    twilio_client = Client(ssm_params['twilio_account_id'], ssm_params['twilio_api_key'])
+    fax = twilio_client.fax.faxes.create(
+        from_=from_phone,
+        to=to_phone,
         quality="standard",
-        media_url=url
+        media_url=media_url
     )
     timeout = time.time() + 60*5   # 5 minutes from now
     completed = False
@@ -73,8 +71,6 @@ def lambda_handler(event, context):
     '''
     Send any PDF uploaded to S3 bucket SendFaxBucket to a specific number.
     '''
-    # Log the the received event locally.
-    # print("Received event: " + json.dumps(event, indent=2))
 
     # Get the object from the event.
     bucket_name = event['Records'][0]['s3']['bucket']['name']
@@ -91,12 +87,19 @@ def lambda_handler(event, context):
             ExpiresIn=3600
         )
 
-        # send_fax(media_url)
+        s3_resource = boto3.resource('s3')
+        s3_object = s3_resource.Object(bucket_name, object_key)
+        from_phone = s3_object.metadata['from_phone']
+        to_phone = s3_object.metadata['to_phone']
+        send_fax(from_phone, to_phone, media_url)
         logger.info(f"Created media url {media_url}")
-        return None
 
-    except Exception as err:
-        logger.error(
+        return True
+
+    except Exception as e:
+        logger.info(
             f"Error processing object {object_key} from bucket {bucket_name}. Event {json.dumps(event, indent=2)}"
         )
-        raise err
+        logger.error(e)
+
+        return False
