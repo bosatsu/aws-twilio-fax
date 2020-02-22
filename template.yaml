@@ -14,7 +14,7 @@ Resources:
   EmailToFaxBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub "email-to-fax-bucket-${AWS::StackName}"
+      BucketName: !Sub "email-to-fax-${AWS::Region}-${AWS::AccountId}"
       LifecycleConfiguration:
         Rules:
           - ExpirationInDays: 1
@@ -24,10 +24,22 @@ Resources:
             Status: Enabled
             Id: NoncurrentObjectExpires
 
+  EmailToFaxBucketPolicy:              
+    Type: AWS::S3::BucketPolicy
+    Properties: 
+      Bucket: !Ref EmailToFaxBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ses.amazonaws.com
+            Action: 's3:PutObject'
+            Resource: !Sub "arn:aws:s3:::email-to-fax-${AWS::Region}-${AWS::AccountId}/*"
+            
   SendFaxBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub "send-fax-bucket-${AWS::StackName}"
+      BucketName: !Sub "send-fax-${AWS::Region}-${AWS::AccountId}"
       LifecycleConfiguration:
         Rules:
           - ExpirationInDays: 1
@@ -40,7 +52,7 @@ Resources:
   RecieveFaxBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub "receive-fax-bucket-${AWS::StackName}"
+      BucketName: !Sub "receive-fax-${AWS::Region}-${AWS::AccountId}"
       LifecycleConfiguration:
         Rules:
           - ExpirationInDays: 14
@@ -64,19 +76,20 @@ Resources:
             - Effect: Allow
               Action:
                 - s3:PutObject
-              Resource: !Sub "arn:aws:s3:::send-fax-bucket-${AWS::StackName}/*"
+              Resource: !Sub "arn:aws:s3:::send-fax-${AWS::Region}-${AWS::AccountId}/*"
             - Effect: Allow
               Action:
                 - s3:GetObject
                 - s3:DeleteObject
-              Resource: !Sub "arn:aws:s3:::email-to-fax-bucket-${AWS::StackName}/*"
+              Resource: !Sub "arn:aws:s3:::email-to-fax-${AWS::Region}-${AWS::AccountId}/*"
             - Effect: Allow
               Action:
                 - ssm:GetParameter
               Resource:
-              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/prod/approved_fax_senders
+              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/prod/fax_emails
               - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/prod/admin_email
-              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/prod/validated_ses_email
+              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/prod/aws_email
+              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/prod/twilio
       Events:
         EmailUpload:
           Type: S3
@@ -85,6 +98,10 @@ Resources:
               Ref: EmailToFaxBucket
             Events:
               - s3:ObjectCreated:*
+
+
+
+
 
   SendFaxFunction:
     Type: AWS::Serverless::Function
@@ -97,7 +114,7 @@ Resources:
             - Effect: Allow
               Action:
                 - s3:GetObject
-              Resource: !Sub "arn:aws:s3:::send-fax-bucket-${AWS::StackName}/*"
+              Resource: !Sub "arn:aws:s3:::send-fax-${AWS::Region}-${AWS::AccountId}/*"
             - Effect: Allow
               Action:
                 - ssm:GetParameter
@@ -111,6 +128,27 @@ Resources:
               Ref: SendFaxBucket
             Events:
               - s3:ObjectCreated:*
+
+  AWSFaxApi:
+    Type: AWS::Serverless::Api
+    Properties: 
+      StageName: Prod
+      GatewayResponses:
+        ACCESS_DENIED: # This is to prevent more specific responses being sent to requester
+          StatusCode: 401
+          ResponseTemplates: 
+            "application/json": '{ "message": "Unauthorized" }'
+      Auth:
+        DefaultAuthorizer: AWSFaxApiAuthorizer
+        Authorizers:
+          AWSFaxApiAuthorizer:
+            FunctionPayloadType: REQUEST
+            FunctionArn: !GetAtt FaxAPIAuthFunction.Arn
+            Identity:
+              ReauthorizeEvery: 300 #Default value, included for awareness
+              QueryStrings:
+                - id
+                - key             
 
   ReceiveFaxFunction:
     Type: AWS::Serverless::Function
@@ -130,13 +168,27 @@ Resources:
         FaxCheck:
           Type: Api
           Properties:
+            RestApiId: !Ref "AWSFaxApi"
             Path: /fax/check
             Method: post
         FaxReceive:
           Type: Api
           Properties:
+            RestApiId: !Ref "AWSFaxApi"
             Path: /fax/receive
             Method: post
+  
+  FaxAPIAuthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: API authorizer function for all methods
+      Handler: api_authorizer.lambda_handler
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action: apigateway:GET
+              Resource: !Sub arn:aws:apigateway:us-west-2::/apikeys/${TwilioAPIKey}
 
   FaxToEmailFunction:
     Type: AWS::Serverless::Function
@@ -149,7 +201,7 @@ Resources:
             - Effect: Allow
               Action:
                 - s3:GetObject
-              Resource: !Sub "arn:aws:s3:::receive-fax-bucket-${AWS::StackName}/*"
+              Resource: !Sub "arn:aws:s3:::receive-fax-${AWS::Region}-${AWS::AccountId}/*"
             - Effect: Allow
               Action:
                 - ssm:GetParameter
@@ -164,40 +216,16 @@ Resources:
             Events:
               - s3:ObjectCreated:*
 
-  EmailToFaxSESRuleSet:
-    Type: AWS::SES::ReceiptRuleSet
+  TwilioAPIKey:
+    Type: AWS::ApiGateway::ApiKey
     Properties:
-      RuleSetName: default-rule-set
-  EmailToFaxSESRule1:
-    Type: AWS::SES::ReceiptRule
-    Properties:
-      RuleSetName: !Ref EmailToFaxSESRuleSet
-      Rule:
-        Enabled: true
-        ScanEnabled: true
-        Recipients:
-          - fax@faxtojapan.xyz
-        Actions:
-          - S3Action:
-               BucketName: !Ref EmailToFaxBucket
-
-  EmailToFaxBucketPolicy:              
-    Type: AWS::S3::BucketPolicy
-    Properties: 
-      Bucket: !Ref EmailToFaxBucket
-      PolicyDocument:
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ses.amazonaws.com
-            Action: 's3:PutObject'
-            Resource: !Sub "arn:aws:s3:::email-to-fax-bucket-${AWS::StackName}/*"
-
+      Description: API key for Twilio
+      Enabled: True
 
 Outputs:
   ReceiveFaxApi:
     Description: "API Gateway endpoint URL for Prod stage for ReceiveFax function"
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${ServerlessRestApiProdStage}/"
-  EmailToFaxBucketName:
-    Value: !Ref 'EmailToFaxBucket'
-    Description: Name of the EmailToFaxBucket Bucket.
+    Value: !Sub "https://${AWSFaxApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
+  EmailToFaxBucket:
+    Description: "Name for the EmailToFaxBucket"
+    Value: !Ref EmailToFaxBucket

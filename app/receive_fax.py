@@ -30,10 +30,6 @@ def lambda_handler(event, context):
     method = event['httpMethod']
     path = event['path']
 
-    # check if client is from Twilio, return 403 if not
-    if 'TwilioProxy' not in event['headers']['User-Agent']:
-        return return_403
-
     # handle posts to /fax/check endpoint, starting point for Twilio communication
     # returns endpoint where Twilio should send the fax
     if method == 'POST' and path == '/fax/check':
@@ -99,7 +95,7 @@ def lambda_handler(event, context):
             }
 
         except ClientError as e:
-            logger.info("Error occurred")
+            logger.error(f"Error occurred saving PDF to S3 bucket, media url is {media_url}")
             logger.error(e)
 
             return {

@@ -4,6 +4,7 @@ import urllib
 import time
 
 import boto3
+from botocore.exceptions import ClientError
 from twilio.rest import Client
 
 # Initialize logging
@@ -13,17 +14,52 @@ logger.setLevel(logging.INFO)
 # Initialize AWS clients
 s3_client = boto3.client('s3')
 ssm_client = boto3.client('ssm')
+ses_client = boto3.client('ses', os.environ['AWS_REGION'])
 
 # Fetch ssm parameters
 ssm_response = ssm_client.get_parameter(Name='/prod/twilio', WithDecryption=True)
-ssm_params = json.loads(ssm_response['Parameter']['Value'])
+twilio_params = json.loads(ssm_response['Parameter']['Value'])
+
+
+def send_email(recipient, sender, subject, charset, body_html, body_text):
+    logger.info(f"Attempting to send email to {recipient} with subject: {subject}")
+    try:
+        ses_client.send_email(
+            Destination={
+                'ToAddresses': [
+                    recipient,
+                ],
+            },
+            Message={
+                'Body': {
+                    'Html': {
+                        'Charset': charset,
+                        'Data': body_html,
+                    },
+                    'Text': {
+                        'Charset': charset,
+                        'Data': body_text,
+                    },
+                },
+                'Subject': {
+                    'Charset': charset,
+                    'Data': subject,
+                },
+            },
+            Source=sender,
+        )
+        logger.info(f"Email sent successfully")
+
+    except ClientError as e:
+        logger.info(f"Email failed to send")
+        logger.error(e.response['Error']['Message'])
 
 
 def send_fax(from_phone, to_phone, media_url):
     '''
     Function for sending a fax
     '''
-    twilio_client = Client(ssm_params['twilio_account_id'], ssm_params['twilio_api_key'])
+    twilio_client = Client(twilio_params['twilio_account_id'], twilio_params['twilio_api_key'])
     fax = twilio_client.fax.faxes.create(
         from_=from_phone,
         to=to_phone,
